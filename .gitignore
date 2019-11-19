@@ -3,6 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# folders
+mnist_nets/
+test_cases/
+
 # C extensions
 *.so
 
