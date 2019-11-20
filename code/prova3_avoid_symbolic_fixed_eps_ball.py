@@ -15,7 +15,6 @@ from networks    import FullyConnected, Conv
 DEVICE = 'cpu'
 INPUT_SIZE = 28
 
-
 def computeBounds(params):
     lx= []
     ux= []
@@ -33,9 +32,9 @@ def computeBounds(params):
                  
     return lx, ux
 
-def deepZabstraction(out, neuron_i, lx_neuron_i, ux_neuron_i, x, k):
-    dEps= k*ux_neuron_i/100
-    s= (ux_neuron_i + dEps)/(ux_neuron_i-lx_neuron_i)  # slope (i.e. lambda value)
+def deepZabstraction(out, neuron_i, lx_neuron_i, ux_neuron_i, x):
+
+    s= ux_neuron_i/(ux_neuron_i-lx_neuron_i)  # slope (i.e. lambda value)
     for j in range(len(x)): #all coeff but biased are multiplied by slope
         out[j,neuron_i]= s*x[j,neuron_i]        
     out[0,neuron_i]= out[0,neuron_i] - s*lx_neuron_i/2            
@@ -46,7 +45,7 @@ def deepZabstraction(out, neuron_i, lx_neuron_i, ux_neuron_i, x, k):
     return out
     
 
-def computeReLUabstraction(x, k):
+def computeReLUabstraction(x):
     '''
     x: matrix defined as [a1; x;  a2; new_eps; bias]
         a1: coeff. epsilon1
@@ -70,13 +69,13 @@ def computeReLUabstraction(x, k):
            #out.append(np.zeros([len(x),1])) #no need because I initialize out to zero
         else:
             #crossing boundary case
-            out= deepZabstraction(out, i, lx[i], ux[i], x, k)
+            out= deepZabstraction(out, i, lx[i], ux[i], x)
             
 #        out_prova_no_eps[0, i] = max(0, x[0,i])                        
     return out
     
 
-def computeNNout(net, pxls, nn_type: str, k: int, eps: float):
+def computeNNout(net, pxls, nn_type: str, eps: float):
     if nn_type== 'fc': # i.e. fully connected
 
         ''' FULLY CONNECTED NN   '''
@@ -101,7 +100,7 @@ def computeNNout(net, pxls, nn_type: str, k: int, eps: float):
                 
             elif type(net.layers[i])==torch.nn.modules.activation.ReLU:
                 ''' zonotope ReLU transformer '''
-                out_ii= computeReLUabstraction(x_ii, k)
+                out_ii= computeReLUabstraction(x_ii)
 
         out_nn= out_ii
     elif nn_type== 'cnn': # i.e. convolutional nn
@@ -124,9 +123,9 @@ def is_verified(coeff, true_label, eps):
         vector_diff= true_label_coeff - rest_coeff[:,i]
         for j in range(1, len(rest_coeff)):
             if vector_diff[j]<0:
-                vector_diff[j]= eps*vector_diff[j]
+                vector_diff[j]= vector_diff[j]
             else:
-                vector_diff[j]= -eps*vector_diff[j]
+                vector_diff[j]= -vector_diff[j]
         worst_case_i= np.sum(vector_diff)
         if worst_case_i >=0:
             count = count +1
@@ -147,19 +146,14 @@ def analyze(net, inputs, eps, true_label):
         nn_type= 'cnn'
         
     verified= 0
-    k=0
-    k_lim= 10
-    while (verified==0 and k<k_lim):
-        output_nn = computeNNout(net, inputs, nn_type, k, eps) 
-        verified = is_verified (output_nn, true_label, eps)
-        k= k+1
+
+    output_nn = computeNNout(net, inputs, nn_type, eps) 
+    verified = is_verified (output_nn, true_label, eps)
     
     # return 1 if verified and 0 if not verified
-    
-    if verified:
-        print('verified for k = %d', k-1)
-    
     return verified
+
+
 
 
 
@@ -174,7 +168,7 @@ net = FullyConnected(DEVICE, INPUT_SIZE, [100, 10]).to(DEVICE)
 net.load_state_dict(torch.load('../mnist_nets/%s.pt' % 'fc1', map_location=torch.device(DEVICE)))
 
 
-spec= '../test_cases/fc1/img1_0.07500.txt'
+spec= '../test_cases/fc1/img0_0.00000.txt'
 with open(spec, 'r') as f:
         lines = [line[:-1] for line in f.readlines()]
         true_label = int(lines[0])
@@ -187,7 +181,7 @@ outs = net(inputs)
 pred_label = outs.max(dim=1)[1].item()
 assert pred_label == true_label
 
-#output_nn= computeNNout(net, inputs, 'fc', 0)
+#output_nn= computeNNout(net, inputs, 'fc', 0, eps)
 if analyze(net, inputs, eps, true_label):
     print('verified')
 else:

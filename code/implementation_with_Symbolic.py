@@ -31,24 +31,6 @@ def computeBounds(x):
     ux= []
     for j in range(len(x)):
         a1= x[j].coeff('eps1')
-        '''
-        a2= x[j].coeff('eps2')
-        if a1>0:
-            if a2 >0:
-                lx.append(x[j].subs([('eps1', -1), ('eps2', -1)]))
-                ux.append(x[j].subs([('eps1', +1), ('eps2', +1)]))
-            else:
-                lx.append(x[j].subs([('eps1', -1), ('eps2', 1)]))
-                ux.append(x[j].subs([('eps1', +1), ('eps2', -1)]))
-        else:
-             if a2 >0:
-                 lx.append(x[j].subs([('eps1', 1), ('eps2', -1)]))
-                 ux.append(x[j].subs([('eps1', -1), ('eps2', 1)]))
-             else:
-                lx.append(x[j].subs([('eps1', 1), ('eps2', 1)]))
-                ux.append(x[j].subs([('eps1', -1), ('eps2', -1)]))
-                '''
-                
         if a1>0:
             lx.append(x[j].subs([('eps1', -1)]))
             ux.append(x[j].subs([('eps1', +1)]))
@@ -146,12 +128,10 @@ def analyze(net, inputs, eps, true_label):
 '''                 MAIN               '''
 
 
+net = FullyConnected(DEVICE, INPUT_SIZE, [50, 50, 10]).to(DEVICE)
+net.load_state_dict(torch.load('../mnist_nets/%s.pt' % 'fc2', map_location=torch.device(DEVICE)))
 
-
-net = FullyConnected(DEVICE, INPUT_SIZE, [100, 10]).to(DEVICE)
-net.load_state_dict(torch.load('../mnist_nets/%s.pt' % 'fc1', map_location=torch.device(DEVICE)))
-
-spec= '../test_cases/fc1/img0_0.06000.txt'
+spec= '../test_cases/fc2/img0_0.05500.txt'
 with open(spec, 'r') as f:
         lines = [line[:-1] for line in f.readlines()]
         true_label = int(lines[0])

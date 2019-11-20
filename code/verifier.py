@@ -1,13 +1,10 @@
 import argparse
 import torch
-import sympy     as sym
 import numpy     as np
 from networks    import FullyConnected, Conv
 
 DEVICE = 'cpu'
 INPUT_SIZE = 28
-
-'''     M Y      I M P L E M E N T A T I O N  (IVAN)  '''
 
 def computeBounds(params):
     lx= []
@@ -26,9 +23,9 @@ def computeBounds(params):
                  
     return lx, ux
 
-def deepZabstraction(out, neuron_i, lx_neuron_i, ux_neuron_i, x, k):
-    dEps= k*ux_neuron_i/100
-    s= (ux_neuron_i + dEps)/(ux_neuron_i-lx_neuron_i)  # slope (i.e. lambda value)
+def deepZabstraction(out, neuron_i, lx_neuron_i, ux_neuron_i, x):
+
+    s= ux_neuron_i/(ux_neuron_i-lx_neuron_i)  # slope (i.e. lambda value)
     for j in range(len(x)): #all coeff but biased are multiplied by slope
         out[j,neuron_i]= s*x[j,neuron_i]        
     out[0,neuron_i]= out[0,neuron_i] - s*lx_neuron_i/2            
@@ -39,7 +36,7 @@ def deepZabstraction(out, neuron_i, lx_neuron_i, ux_neuron_i, x, k):
     return out
     
 
-def computeReLUabstraction(x, k):
+def computeReLUabstraction(x):
     '''
     x: matrix defined as [a1; x;  a2; new_eps; bias]
         a1: coeff. epsilon1
@@ -63,22 +60,21 @@ def computeReLUabstraction(x, k):
            #out.append(np.zeros([len(x),1])) #no need because I initialize out to zero
         else:
             #crossing boundary case
-            out= deepZabstraction(out, i, lx[i], ux[i], x, k)
+            out= deepZabstraction(out, i, lx[i], ux[i], x)
             
 #        out_prova_no_eps[0, i] = max(0, x[0,i])                        
     return out
     
 
-def computeNNout(net, pxls, nn_type: str, k: int):
+def computeNNout(net, pxls, nn_type: str, eps: float):
     if nn_type== 'fc': # i.e. fully connected
 
         ''' FULLY CONNECTED NN   '''
         pixels= pxls.reshape(784)         
-        a1= np.ones(len(pixels)) # all coeff. for eps1
+        a1= eps * np.ones(len(pixels)) # all coeff. for eps1
         p= np.asarray(pixels)
-        a2= np.ones(len(pixels)) # all coeff. for eps2        
         #save each pixel and the coefficients of epsilon in same matrix
-        out_ii = np.stack([p, a1, a2], axis=0)
+        out_ii = np.stack([p, a1], axis=0)
         #run zonotope params through nn 
         for i in range(2,len(net.layers)): # start from 2 because layer 1 is 
                                            # normalization and layer 2 is flattening
@@ -95,7 +91,7 @@ def computeNNout(net, pxls, nn_type: str, k: int):
                 
             elif type(net.layers[i])==torch.nn.modules.activation.ReLU:
                 ''' zonotope ReLU transformer '''
-                out_ii= computeReLUabstraction(x_ii, k)
+                out_ii= computeReLUabstraction(x_ii)
 
         out_nn= out_ii
     elif nn_type== 'cnn': # i.e. convolutional nn
@@ -118,12 +114,13 @@ def is_verified(coeff, true_label, eps):
         vector_diff= true_label_coeff - rest_coeff[:,i]
         for j in range(1, len(rest_coeff)):
             if vector_diff[j]<0:
-                vector_diff[j]= eps*vector_diff[j]
+                vector_diff[j]= vector_diff[j]
             else:
-                vector_diff[j]= -eps*vector_diff[j]
+                vector_diff[j]= -vector_diff[j]
         worst_case_i= np.sum(vector_diff)
-        if worst_case_i>=0:
-            count= count+1
+        if worst_case_i >=0:
+            count = count +1
+        
             
     if count == len(rest_coeff.T):
         verified= 1
@@ -140,20 +137,12 @@ def analyze(net, inputs, eps, true_label):
         nn_type= 'cnn'
         
     verified= 0
-    k=0
-    k_lim= 100
-    while (verified==0 and k<k_lim):
-        output_nn = computeNNout(net, inputs, nn_type, k) 
-        verified = is_verified (output_nn, true_label, eps)
-        k= k+1
+
+    output_nn = computeNNout(net, inputs, nn_type, eps) 
+    verified = is_verified (output_nn, true_label, eps)
     
     # return 1 if verified and 0 if not verified
     return verified
-
-
-
-
-
 
 
 def main():
