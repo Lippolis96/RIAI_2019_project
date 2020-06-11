@@ -1,151 +1,135 @@
 import argparse
 import torch
-import numpy     as np
-from networks    import FullyConnected, Conv
+from networks import FullyConnected, Conv
+from networks_z import FullyConnectedZ, ConvZ, ReLUZ, ReLUConvZ
 
 DEVICE = 'cpu'
 INPUT_SIZE = 28
 
-def computeBounds(params):
-    lx= []
-    ux= []
-    x= params[0,:]
-    for j in range(len(x)):
-        ux.append(x[j])
-        lx.append(x[j])
-        for i in range (1,len(params)): # start from 1 because we already sum pxl value 
-            if params[i,j]>=0:
-                ux[j]= ux[j] + params[i,j]
-                lx[j]= lx[j] - params[i,j]
-            else:
-                ux[j]= ux[j] - params[i,j]
-                lx[j]= lx[j] + params[i,j]
-                 
-    return lx, ux
-
-def deepZabstraction(out, neuron_i, lx_neuron_i, ux_neuron_i, x):
-
-    s= ux_neuron_i/(ux_neuron_i-lx_neuron_i)  # slope (i.e. lambda value)
-    for j in range(len(x)): #all coeff but biased are multiplied by slope
-        out[j,neuron_i]= s*x[j,neuron_i]        
-    out[0,neuron_i]= out[0,neuron_i] - s*lx_neuron_i/2            
-    # add new row for the new epsilon coeff
-    out= np.concatenate((out, np.zeros([1, len(out.T)])))
-    out[len(out)-1,neuron_i]= - s*lx_neuron_i/2
-
-    return out
+class lambdaConstraint():
+    def __init__(self):
+        pass
     
+    def __call__(self,module):
+        if hasattr(module, 'lambdas'):
+            w = module.lambdas.data
+            w = w.clamp(0.0, 1.0)
+            module.lambdas.data = w
 
-def computeReLUabstraction(x):
-    '''
-    x: matrix defined as [a1; x;  a2; new_eps; bias]
-        a1: coeff. epsilon1
-        a2: coeff. epsilon2
-        new_eps: vector of coeff due to new epsilon introduced by Relu
+
+class VerificationMargin(torch.nn.Module):
+    
+    def __init__(self):
+        super(VerificationMargin, self).__init__()
         
-    layer_i: actual layer in which we are computing Relu abstraction
-    '''
-    
-    # 1) check lower and upper bounds
-    lx, ux= computeBounds(x)
-    out= np.zeros([len(x), len(x.T)])
-    
-#    out_prova_no_eps= np.zeros([len(x), len(x.T)]) #--> USED FOR TESTING set all eps to 0
-    # 2) compute output ReLU abstraction  
-    for i in range(len(x.T)):
-        if lx[i]>0:
-            out[:len(x),i]= x[:,i]
-        elif ux[i]<=0:         
-            1
-           #out.append(np.zeros([len(x),1])) #no need because I initialize out to zero
-        else:
-            #crossing boundary case
-            out= deepZabstraction(out, i, lx[i], ux[i], x)
-            
-#        out_prova_no_eps[0, i] = max(0, x[0,i])                        
-    return out
-    
+    def forward(self, outs, low_params, high_params, true_label):
+        
+        mask = torch.zeros_like(low_params)
+        mask[:, true_label] = 1
+        true_params = low_params[mask.bool()]
+        diff_params = high_params + true_params.view(true_params.size(0), 1)
+        
+        mask = (diff_params<0).bool()
+        ones = torch.ones_like(diff_params)
+        ones[mask] = -ones[mask] 
+        diff_params_abs = ones * diff_params
 
-def computeNNout(net, pxls, nn_type: str, eps: float):
-    if nn_type== 'fc': # i.e. fully connected
+        diff_params_sum = torch.sum(diff_params_abs, axis = 0)
+        diff_params_sum = diff_params_sum.unsqueeze(0)
+        
+        diff_outs = outs - outs[0, true_label]
+        
+        diff_tot = diff_outs + diff_params_sum
+        
+        diff_tot[0, true_label] =  float('-inf') 
+        
+        loss = torch.max(diff_tot)
+        
+        """
+        Alternative loss to return:
+            loss = torch.sum(diffs) - (true_high-true_low)
+        This one already tries to push true low away from any other high,
+        not only away from the other highest high.
+        """
+        
+        # Here we return just the worst case
+        return loss
 
-        ''' FULLY CONNECTED NN   '''
-        pixels= pxls.reshape(784)         
-        a1= eps * np.ones(len(pixels)) # all coeff. for eps1
-        p= np.asarray(pixels)
-        #save each pixel and the coefficients of epsilon in same matrix
-        out_ii = np.stack([p, a1], axis=0)
-        #run zonotope params through nn 
-        for i in range(2,len(net.layers)): # start from 2 because layer 1 is 
-                                           # normalization and layer 2 is flattening
-            x_ii= out_ii
-            if type(net.layers[i])==torch.nn.modules.linear.Linear:
-                ''' zonotope affine transformer '''
-                w_i= np.asarray(net.layers[i].weight.detach())   
-                b_i= np.asarray(net.layers[i].bias.detach())                
-                out= []
-                for j in range(len(x_ii)):
-                    out.append(np.dot(w_i, x_ii[j,:]))                
-                out[0]=out[0]+b_i # add bias to pixel value
-                out_ii= np.asarray(out)
+
+class LambdaTuner():
+    
+    def __init__(self, net, inputs, low_params, high_params, true_label, lr, eps):
+        self.net = net
+        self.inputs = inputs
+        self.low_params = low_params
+        self.high_params = high_params
+        self.true_label = true_label
+        self.loss = VerificationMargin()
+        
+        self.constraints = lambdaConstraint()
+        self.lambdas = []
+        
+        # Create list of optimizable params. Only this are updated (VERIFIED)
+        for layer in self.net.layers:
+            if type(layer) == ReLUZ or type(layer) == ReLUConvZ:
+                self.lambdas.append(layer.lambdas)     
                 
-            elif type(net.layers[i])==torch.nn.modules.activation.ReLU:
-                ''' zonotope ReLU transformer '''
-                out_ii= computeReLUabstraction(x_ii)
+        self.optimizer = torch.optim.Adam(self.lambdas, lr=lr)
+        self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optimizer, gamma= 0.95)
+    def _is_verified(self, loss):
+        return loss.item() < 0
 
-        out_nn= out_ii
-    elif nn_type== 'cnn': # i.e. convolutional nn
-        1
-    ''' CONVOLUTIONAL NN   '''
+    def __call__(self):
+        # Set training mode
+        self.net.train()
+        verified = False
+        
+        while not verified:
 
-    '''
-    TODO
-    '''        
-    
-    return out_nn
-    
-def is_verified(coeff, true_label, eps):
-        
-    true_label_coeff= coeff[:, true_label]
-    rest_coeff= np.delete(coeff, true_label, 1)
-    verified= 0    
-    count= 0
-    for i in range(len(rest_coeff.T)):
-        vector_diff= true_label_coeff - rest_coeff[:,i]
-        for j in range(1, len(rest_coeff)):
-            if vector_diff[j]<0:
-                vector_diff[j]= vector_diff[j]
-            else:
-                vector_diff[j]= -vector_diff[j]
-        worst_case_i= np.sum(vector_diff)
-        if worst_case_i >=0:
-            count = count +1
-        
+            self.optimizer.zero_grad()
+            outs, low_params, high_params = self.net(self.inputs, self.low_params, self.high_params)
+            loss = self.loss(outs, low_params, high_params, self.true_label)
+            verified = self._is_verified(loss)
+            if verified: break
             
-    if count == len(rest_coeff.T):
-        verified= 1
+            # Backward pass
+            loss.backward()
+            # Update weights
+            self.optimizer.step()
+            self.scheduler.step()
+            # Constrain lambdas between [0,1]
+            for layer in self.net.layers:
+                if type(layer) == ReLUZ or type(layer) == ReLUConvZ:    
+                    layer.apply(self.constraints)
+            
+        return verified
         
-    return verified
-
     
-                     
-def analyze(net, inputs, eps, true_label):
+def analyze(net, inputs, low_params, high_params, true_label, lr, eps):
+    """Function that analyzes the robustness of a z-model net to eps-attacks on 
+    input inputs.
     
-    if type(net.layers[1])==torch.nn.modules.flatten.Flatten:            
-        nn_type= 'fc'
-    elif type(net.layers[1])==torch.nn.modules.conv.Conv2d:
-        nn_type= 'cnn'
+    Args:Module
+        - net: z-model for bounds propagation
+        - inputs: raw inputs before attacks
+        - params: matrix containing eps disturbance on each input
+        - true_label: true label for inputs
         
-    verified= 0
-
-    output_nn = computeNNout(net, inputs, nn_type, eps) 
-    verified = is_verified (output_nn, true_label, eps)
+        ciao ivan sono frank e mi sono mandato tutto a casa xD
+        cari saluti dalla Cina
     
-    # return 1 if verified and 0 if not verified
+    Returns True if robustness is verified, else False.
+    """
+
+    tuner = LambdaTuner(net, inputs, low_params, high_params, true_label, lr, eps)
+    
+    verified = tuner() # Boolean
+    
     return verified
 
 
 def main():
+    
     parser = argparse.ArgumentParser(description='Neural network verification using DeepZ relaxation')
     parser.add_argument('--net',
                         type=str,
@@ -161,39 +145,63 @@ def main():
         pixel_values = [float(line) for line in lines[1:]]
         eps = float(args.spec[:-4].split('/')[-1].split('_')[-1])
 
+
     if args.net == 'fc1':
         net = FullyConnected(DEVICE, INPUT_SIZE, [100, 10]).to(DEVICE)
+        net_z = FullyConnectedZ(DEVICE, INPUT_SIZE, [100, 10]).to(DEVICE)
     elif args.net == 'fc2':
         net = FullyConnected(DEVICE, INPUT_SIZE, [50, 50, 10]).to(DEVICE)
+        net_z = FullyConnectedZ(DEVICE, INPUT_SIZE, [50, 50, 10]).to(DEVICE)
     elif args.net == 'fc3':
         net = FullyConnected(DEVICE, INPUT_SIZE, [100, 100, 10]).to(DEVICE)
+        net_z = FullyConnectedZ(DEVICE, INPUT_SIZE, [100, 100, 10]).to(DEVICE)
     elif args.net == 'fc4':
         net = FullyConnected(DEVICE, INPUT_SIZE, [100, 100, 100, 10]).to(DEVICE)
+        net_z = FullyConnectedZ(DEVICE, INPUT_SIZE, [100, 100, 100, 10]).to(DEVICE)
     elif args.net == 'fc5':
         net = FullyConnected(DEVICE, INPUT_SIZE, [400, 200, 100, 100, 10]).to(DEVICE)
+        net_z = FullyConnectedZ(DEVICE, INPUT_SIZE, [400, 200, 100, 100, 10]).to(DEVICE)
     elif args.net == 'conv1':
         net = Conv(DEVICE, INPUT_SIZE, [(32, 4, 2, 1)], [100, 10], 10).to(DEVICE)
+        net_z = ConvZ(DEVICE, INPUT_SIZE, [(32, 4, 2, 1)], [100, 10], 10).to(DEVICE)
     elif args.net == 'conv2':
         net = Conv(DEVICE, INPUT_SIZE, [(32, 4, 2, 1), (64, 4, 2, 1)], [100, 10], 10).to(DEVICE)
+        net_z = ConvZ(DEVICE, INPUT_SIZE, [(32, 4, 2, 1), (64, 4, 2, 1)], [100, 10], 10).to(DEVICE)
     elif args.net == 'conv3':
         net = Conv(DEVICE, INPUT_SIZE, [(32, 3, 1, 1), (32, 4, 2, 1), (64, 4, 2, 1)], [150, 10], 10).to(DEVICE)
+        net_z = ConvZ(DEVICE, INPUT_SIZE, [(32, 3, 1, 1), (32, 4, 2, 1), (64, 4, 2, 1)], [150, 10], 10).to(DEVICE)
     elif args.net == 'conv4':
         net = Conv(DEVICE, INPUT_SIZE, [(32, 4, 2, 1), (64, 4, 2, 1)], [100, 100, 10], 10).to(DEVICE)
+        net_z = ConvZ(DEVICE, INPUT_SIZE, [(32, 4, 2, 1), (64, 4, 2, 1)], [100, 100, 10], 10).to(DEVICE)
     elif args.net == 'conv5':
         net = Conv(DEVICE, INPUT_SIZE, [(16, 3, 1, 1), (32, 4, 2, 1), (64, 4, 2, 1)], [100, 100, 10], 10).to(DEVICE)
+        net_z = ConvZ(DEVICE, INPUT_SIZE, [(16, 3, 1, 1), (32, 4, 2, 1), (64, 4, 2, 1)], [100, 100, 10], 10).to(DEVICE)
 
     net.load_state_dict(torch.load('../mnist_nets/%s.pt' % args.net, map_location=torch.device(DEVICE)))
-
+    net_z.load_state_dict(torch.load('../mnist_nets/%s.pt' % args.net, map_location=torch.device(DEVICE)))
+    
     inputs = torch.FloatTensor(pixel_values).view(1, 1, INPUT_SIZE, INPUT_SIZE).to(DEVICE)
+
+    low_params = [min(eps, p) for i, p in enumerate(pixel_values)]
+    high_params = [min(eps, 1-p) for i, p in enumerate(pixel_values)]
+
     outs = net(inputs)
     pred_label = outs.max(dim=1)[1].item()
     assert pred_label == true_label
 
-    if analyze(net, inputs, eps, true_label):
-        print('verified')
+    if args.net.startswith('fc'):
+        lr = 0.1
     else:
-        print('not verified')
-        
+        lr = 0.01
+
+    if eps == 0:
+        print('verified')   
+    else:
+        if analyze(net_z, inputs, low_params, high_params, true_label, lr, eps):
+            print('verified')
+            
+        else:
+            print('not verified')
 
 
 if __name__ == '__main__':

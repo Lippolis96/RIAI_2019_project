@@ -27,9 +27,9 @@ class FullyConnected(nn.Module):
             prev_fc_size = fc_size
         self.layers = nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x):        
         return self.layers(x)
-
+    
 
 class Conv(nn.Module):
 
